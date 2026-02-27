@@ -75,8 +75,9 @@ runs:
     INPUT_FAIL_ON_NO_MATCH: ${{ inputs.fail_on_no_match }}
     INPUT_COMMENT_HEADER: ${{ inputs.comment_header }}
     INPUT_GITHUB_TOKEN: ${{ inputs.github_token }}
-    GITHUB_REPOSITORY: ${{ github.repository }}
-    GITHUB_EVENT_PATH: ${{ github.event_path }}
+    # GITHUB_REPOSITORY and GITHUB_EVENT_PATH are automatically injected
+    # by the GitHub Actions runner into all Docker containers — no explicit
+    # mapping needed here.
 
 branding:
   icon: "search"
