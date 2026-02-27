@@ -230,26 +230,29 @@ def _do_duplicate_detection(path: str, min_score: float, top_k: int) -> list[dic
     """
     Find semantically similar code chunks within the codebase.
     Returns pairs with score above min_score.
+
+    Retrieves all indexed chunks with their vectors via the underlying LanceDB
+    table (store._table.to_arrow()), then for each chunk searches for its
+    nearest neighbours and collects pairs that exceed min_score.
     """
+    import numpy as np
     from vecgrep.server import _do_index, _get_store  # type: ignore
 
     _do_index(path, force=False)
 
+    # Pull all rows including the vector column from the LanceDB table
     with _get_store(path) as store:
-        all_rows = store.search_all()
+        arrow_table = store._table.to_arrow()
+
+    file_paths = arrow_table.column("file_path").to_pylist()
+    start_lines = arrow_table.column("start_line").to_pylist()
+    vectors = arrow_table.column("vector").to_pylist()
 
     pairs = []
     seen: set[tuple] = set()
 
-    for row in all_rows:
-        file_a = row.get("file_path", "")
-        line_a = row.get("start_line", 0)
-        vec = row.get("vector")
-        if vec is None:
-            continue
-
-        import numpy as np
-        vec = np.array(vec, dtype=np.float32)
+    for file_a, line_a, vec_raw in zip(file_paths, start_lines, vectors):
+        vec = np.array(vec_raw, dtype=np.float32)
 
         with _get_store(path) as store:
             neighbours = store.search(vec, top_k=top_k + 1)
