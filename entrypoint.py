@@ -96,7 +96,7 @@ def _post_pr_comment(token: str, repo: str, pr_number: int, body: str) -> None:
 
 def _do_index(path: str) -> str:
     from vecgrep.server import _do_index as do_index  # type: ignore
-    return do_index(path, force=False, watch=False)
+    return do_index(path, force=False)
 
 
 def _do_search(path: str, query: str, top_k: int, min_score: float) -> list[dict]:
@@ -107,7 +107,7 @@ def _do_search(path: str, query: str, top_k: int, min_score: float) -> list[dict
     from vecgrep.server import _do_index, _get_store  # type: ignore
 
     # Ensure index exists
-    _do_index(path, force=False, watch=False)
+    _do_index(path, force=False)
 
     from vecgrep.embedder import embed  # type: ignore
     import numpy as np
@@ -141,7 +141,7 @@ def _do_duplicate_detection(path: str, min_score: float, top_k: int) -> list[dic
     """
     from vecgrep.server import _do_index, _get_store  # type: ignore
 
-    _do_index(path, force=False, watch=False)
+    _do_index(path, force=False)
 
     with _get_store(path) as store:
         all_rows = store.search_all()
