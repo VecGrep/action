@@ -29,7 +29,6 @@ def _set_output(name: str, value: str) -> None:
     output_file = os.environ.get("GITHUB_OUTPUT")
     if output_file:
         with open(output_file, "a") as f:
-            # Use multiline delimiter to handle values with newlines
             delimiter = "EOF_VECGREP"
             f.write(f"{name}<<{delimiter}\n{value}\n{delimiter}\n")
     else:
@@ -55,7 +54,7 @@ def _resolve_path(raw: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# GitHub API helpers (for PR comment mode)
+# GitHub API helpers
 # ---------------------------------------------------------------------------
 
 def _get_pr_number() -> int | None:
@@ -67,6 +66,25 @@ def _get_pr_number() -> int | None:
         return event.get("pull_request", {}).get("number")
     except (json.JSONDecodeError, OSError):
         return None
+
+
+def _github_get(token: str, url: str) -> dict | list:
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    with urllib.request.urlopen(req) as resp:
+        return json.loads(resp.read())
+
+
+def _get_pr_changed_files(token: str, repo: str, pr_number: int) -> list[dict]:
+    """Return the list of files changed in a PR with their patches."""
+    url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/files?per_page=100"
+    return _github_get(token, url)  # type: ignore
 
 
 def _post_pr_comment(token: str, repo: str, pr_number: int, body: str) -> None:
@@ -90,6 +108,15 @@ def _post_pr_comment(token: str, repo: str, pr_number: int, body: str) -> None:
         _log(f"Warning: failed to post PR comment — HTTP {e.code}: {e.reason}")
 
 
+def _extract_added_lines(patch: str) -> str:
+    """Extract only the added lines from a unified diff patch."""
+    lines = []
+    for line in patch.split("\n"):
+        if line.startswith("+") and not line.startswith("+++"):
+            lines.append(line[1:])
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # VecGrep operations
 # ---------------------------------------------------------------------------
@@ -105,12 +132,9 @@ def _do_search(path: str, query: str, top_k: int, min_score: float) -> list[dict
     Each result: {rank, file, start_line, end_line, score, content}
     """
     from vecgrep.server import _do_index, _get_store  # type: ignore
-
-    # Ensure index exists
-    _do_index(path, force=False)
-
     from vecgrep.embedder import embed  # type: ignore
-    import numpy as np
+
+    _do_index(path, force=False)
 
     query_vec = embed([query])[0]
 
@@ -133,10 +157,78 @@ def _do_search(path: str, query: str, top_k: int, min_score: float) -> list[dict
     return results
 
 
+def _do_pr_analyze(
+    path: str,
+    token: str,
+    repo: str,
+    pr_number: int,
+    top_k: int,
+    min_score: float,
+) -> dict[str, list[dict]]:
+    """
+    Analyze a PR by:
+    1. Fetching the list of changed files and their diffs from the GitHub API.
+    2. Extracting added/modified lines from each file's patch.
+    3. Using that content as a semantic query to find related code in the codebase.
+    4. Returning a map of {changed_filename: [related_results]} for files that
+       have meaningful related code elsewhere in the codebase.
+
+    Files with trivial changes (<30 chars of new content) are skipped.
+    Results that point back to the changed file itself are excluded.
+    """
+    _log("Fetching PR changed files...")
+    try:
+        changed_files = _get_pr_changed_files(token, repo, pr_number)
+    except urllib.error.HTTPError as e:
+        _fail(f"Failed to fetch PR files — HTTP {e.code}: {e.reason}")
+
+    # Only analyse files that have a patch (excludes binary files, renames with no edits)
+    files_with_patch = [
+        f for f in changed_files
+        if f.get("patch") and f.get("status") in ("added", "modified", "renamed")
+    ]
+
+    if not files_with_patch:
+        _log("No changed files with content to analyse.")
+        return {}
+
+    _log(f"Indexing codebase at {path}...")
+    _do_index(path)
+
+    findings: dict[str, list[dict]] = {}
+
+    # Limit to 10 files per run to keep CI times reasonable
+    for file_info in files_with_patch[:10]:
+        filename = file_info["filename"]
+        patch = file_info.get("patch", "")
+        added_content = _extract_added_lines(patch)
+
+        if len(added_content.strip()) < 30:
+            _log(f"Skipping {filename} — trivial change.")
+            continue
+
+        # Truncate to 600 chars to keep embedding meaningful
+        query_content = added_content[:600]
+        _log(f"Searching for code related to changes in {filename}...")
+
+        results = _do_search(path, query_content, top_k=top_k, min_score=min_score)
+
+        # Filter out results from the changed file itself
+        workspace = os.environ.get("GITHUB_WORKSPACE", "")
+        related = [
+            r for r in results
+            if not r["file"].endswith(filename)
+        ]
+
+        if related:
+            findings[filename] = related
+
+    return findings
+
+
 def _do_duplicate_detection(path: str, min_score: float, top_k: int) -> list[dict]:
     """
     Find semantically similar code chunks within the codebase.
-    For each chunk, search for its nearest neighbours (excluding itself).
     Returns pairs with score above min_score.
     """
     from vecgrep.server import _do_index, _get_store  # type: ignore
@@ -147,7 +239,7 @@ def _do_duplicate_detection(path: str, min_score: float, top_k: int) -> list[dic
         all_rows = store.search_all()
 
     pairs = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple] = set()
 
     for row in all_rows:
         file_a = row.get("file_path", "")
@@ -167,7 +259,6 @@ def _do_duplicate_detection(path: str, min_score: float, top_k: int) -> list[dic
             line_b = neighbour.get("start_line", 0)
             score = float(neighbour.get("score", 0.0))
 
-            # Skip self-matches
             if file_a == file_b and line_a == line_b:
                 continue
             if score < min_score:
@@ -211,6 +302,47 @@ def _format_results_markdown(results: list[dict], header: str) -> str:
     return "\n".join(lines)
 
 
+def _format_pr_analysis_markdown(findings: dict[str, list[dict]]) -> str:
+    if not findings:
+        return (
+            "## VecGrep PR Analysis\n\n"
+            "No semantically related code found in the codebase for the changes in this PR."
+        )
+
+    lines = [
+        "## VecGrep PR Analysis",
+        "",
+        "The following files changed in this PR have semantically related code elsewhere "
+        "in the codebase. Review these to avoid duplication or ensure consistency.",
+        "",
+    ]
+
+    for changed_file, results in findings.items():
+        lines.append(f"---")
+        lines.append(f"### Changes in `{changed_file}`")
+        lines.append("")
+        lines.append(f"Related code found ({len(results)} match(es)):")
+        lines.append("")
+        for r in results:
+            lines.append(
+                f"**[{r['rank']}]** `{r['file']}:{r['start_line']}-{r['end_line']}` "
+                f"(score: {r['score']})"
+            )
+            lines.append("<details><summary>View snippet</summary>")
+            lines.append("")
+            lines.append("```python")
+            lines.append(r["content"].strip())
+            lines.append("```")
+            lines.append("</details>")
+            lines.append("")
+
+    lines.append("---")
+    lines.append(
+        "_Generated by [VecGrep Action](https://github.com/VecGrep/action)_"
+    )
+    return "\n".join(lines)
+
+
 def _format_duplicates_markdown(pairs: list[dict], header: str) -> str:
     if not pairs:
         return f"### {header}\n\nNo duplicate logic detected above the score threshold."
@@ -231,16 +363,16 @@ def _format_duplicates_markdown(pairs: list[dict], header: str) -> str:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    mode           = _env("INPUT_MODE", "search")
-    query          = _env("INPUT_QUERY")
-    raw_path       = _env("INPUT_PATH", ".")
-    top_k          = int(_env("INPUT_TOP_K", "8"))
-    min_score      = float(_env("INPUT_MIN_SCORE", "0.7"))
-    fail_on_match  = _env("INPUT_FAIL_ON_MATCH", "false").lower() == "true"
+    mode             = _env("INPUT_MODE", "search")
+    query            = _env("INPUT_QUERY")
+    raw_path         = _env("INPUT_PATH", ".")
+    top_k            = int(_env("INPUT_TOP_K", "8"))
+    min_score        = float(_env("INPUT_MIN_SCORE", "0.7"))
+    fail_on_match    = _env("INPUT_FAIL_ON_MATCH", "false").lower() == "true"
     fail_on_no_match = _env("INPUT_FAIL_ON_NO_MATCH", "false").lower() == "true"
-    comment_header = _env("INPUT_COMMENT_HEADER", "VecGrep Semantic Search Results")
-    github_token   = _env("INPUT_GITHUB_TOKEN")
-    repo           = _env("GITHUB_REPOSITORY")
+    comment_header   = _env("INPUT_COMMENT_HEADER", "VecGrep Semantic Search Results")
+    github_token     = _env("INPUT_GITHUB_TOKEN")
+    repo             = _env("GITHUB_REPOSITORY")
 
     path = _resolve_path(raw_path)
     _log(f"VecGrep action | mode={mode} | path={path}")
@@ -252,6 +384,30 @@ def main() -> None:
         stats = _do_index(path)
         _log(stats)
         _set_output("index_stats", stats)
+        return
+
+    # ------------------------------------------------------------------
+    # analyze — PR diff analysis with automatic comment
+    # ------------------------------------------------------------------
+    if mode == "analyze":
+        if not github_token:
+            _fail("Input 'github_token' is required for mode: analyze")
+
+        pr_number = _get_pr_number()
+        if not pr_number:
+            _fail("Could not determine PR number. Ensure this runs on a pull_request event.")
+        if not repo:
+            _fail("GITHUB_REPOSITORY is not set.")
+
+        findings = _do_pr_analyze(path, github_token, repo, pr_number, top_k, min_score)
+        total_matches = sum(len(v) for v in findings.items())
+
+        _set_output("results", json.dumps(findings, indent=2))
+        _set_output("match_count", str(len(findings)))
+
+        body = _format_pr_analysis_markdown(findings)
+        _log(body)
+        _post_pr_comment(github_token, repo, pr_number, body)
         return
 
     # ------------------------------------------------------------------
@@ -289,15 +445,9 @@ def main() -> None:
                 _post_pr_comment(github_token, repo, pr_number, body)
 
         if fail_on_match and match_count > 0:
-            _fail(
-                f"Found {match_count} match(es) for query '{query}' "
-                f"(fail_on_match=true)."
-            )
+            _fail(f"Found {match_count} match(es) for query '{query}' (fail_on_match=true).")
         if fail_on_no_match and match_count == 0:
-            _fail(
-                f"No matches found for query '{query}' "
-                f"(fail_on_no_match=true)."
-            )
+            _fail(f"No matches found for query '{query}' (fail_on_no_match=true).")
         return
 
     # ------------------------------------------------------------------
@@ -324,7 +474,10 @@ def main() -> None:
             _fail(f"Found {match_count} duplicate pair(s) (fail_on_match=true).")
         return
 
-    _fail(f"Unknown mode: '{mode}'. Valid modes: index, search, validate, comment, duplicate.")
+    _fail(
+        f"Unknown mode: '{mode}'. "
+        "Valid modes: index, search, validate, comment, duplicate, analyze."
+    )
 
 
 if __name__ == "__main__":

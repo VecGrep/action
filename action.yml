@@ -10,6 +10,7 @@ inputs:
         validate  — search for a pattern and fail if matches exceed threshold
         comment   — post search results as a PR comment
         duplicate — detect semantically similar code chunks
+        analyze   — analyze the PR diff, find related code, and post a comment automatically
     required: false
     default: "search"
 
