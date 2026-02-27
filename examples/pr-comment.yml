@@ -1,0 +1,27 @@
+# Post semantic search results as a PR comment.
+# Useful for surfacing related code when a PR touches specific areas.
+name: VecGrep PR Comment
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  comment:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find related authentication code
+        uses: VecGrep/action@main
+        with:
+          mode: comment
+          query: "user authentication login session token"
+          path: .
+          top_k: "5"
+          min_score: "0.75"
+          comment_header: "Related authentication code in this repository"
+          github_token: ${{ secrets.GITHUB_TOKEN }}

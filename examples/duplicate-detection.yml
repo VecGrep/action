@@ -1,0 +1,21 @@
+# Detect semantically duplicate logic across the codebase on every PR.
+# Fails the build if duplicate pairs are found above the score threshold.
+name: VecGrep Duplicate Detection
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  duplicates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect duplicate logic
+        uses: VecGrep/action@main
+        with:
+          mode: duplicate
+          path: .
+          min_score: "0.92"
+          fail_on_match: "true"

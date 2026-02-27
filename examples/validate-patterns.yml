@@ -1,0 +1,46 @@
+# Enforce architectural rules and block PRs that violate them.
+# Examples:
+#   - Fail if raw SQL queries are found (should use ORM)
+#   - Fail if hardcoded credentials appear
+#   - Require authentication logic to exist
+name: VecGrep Validate
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Block PRs that contain raw SQL queries
+      - name: Check for raw SQL queries
+        uses: VecGrep/action@main
+        with:
+          mode: validate
+          query: "raw SQL query string concatenation execute cursor"
+          path: .
+          min_score: "0.80"
+          fail_on_match: "true"
+
+      # Block PRs that contain hardcoded secrets or credentials
+      - name: Check for hardcoded credentials
+        uses: VecGrep/action@main
+        with:
+          mode: validate
+          query: "hardcoded password secret api key token credential"
+          path: .
+          min_score: "0.82"
+          fail_on_match: "true"
+
+      # Ensure authentication logic exists in the codebase
+      - name: Require authentication logic
+        uses: VecGrep/action@main
+        with:
+          mode: validate
+          query: "user authentication token verification middleware"
+          path: .
+          min_score: "0.75"
+          fail_on_no_match: "true"

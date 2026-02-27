@@ -1,0 +1,82 @@
+name: "VecGrep"
+description: "Semantic code search for CI/CD — index PRs, validate patterns, detect duplicate logic, enforce architectural rules."
+
+inputs:
+  mode:
+    description: |
+      Operation mode:
+        index     — index the codebase and report stats
+        search    — run a semantic search query and output results
+        validate  — search for a pattern and fail if matches exceed threshold
+        comment   — post search results as a PR comment
+        duplicate — detect semantically similar code chunks
+    required: false
+    default: "search"
+
+  query:
+    description: "Semantic search query (required for search, validate, comment, duplicate modes)."
+    required: false
+    default: ""
+
+  path:
+    description: "Path to the codebase to index/search. Defaults to the repository root."
+    required: false
+    default: "."
+
+  top_k:
+    description: "Number of results to return."
+    required: false
+    default: "8"
+
+  min_score:
+    description: "Minimum similarity score threshold (0.0–1.0). Results below this score are excluded."
+    required: false
+    default: "0.7"
+
+  fail_on_match:
+    description: "Exit with code 1 if any results are found above min_score. Useful for pattern enforcement."
+    required: false
+    default: "false"
+
+  fail_on_no_match:
+    description: "Exit with code 1 if no results are found above min_score. Useful for required pattern checks."
+    required: false
+    default: "false"
+
+  comment_header:
+    description: "Header text for the PR comment (comment mode only)."
+    required: false
+    default: "VecGrep Semantic Search Results"
+
+  github_token:
+    description: "GitHub token for posting PR comments (comment mode only)."
+    required: false
+    default: ""
+
+outputs:
+  results:
+    description: "Search results as a JSON array."
+  match_count:
+    description: "Number of results returned above the score threshold."
+  index_stats:
+    description: "Indexing stats (files indexed, chunks added)."
+
+runs:
+  using: "docker"
+  image: "Dockerfile"
+  env:
+    INPUT_MODE: ${{ inputs.mode }}
+    INPUT_QUERY: ${{ inputs.query }}
+    INPUT_PATH: ${{ inputs.path }}
+    INPUT_TOP_K: ${{ inputs.top_k }}
+    INPUT_MIN_SCORE: ${{ inputs.min_score }}
+    INPUT_FAIL_ON_MATCH: ${{ inputs.fail_on_match }}
+    INPUT_FAIL_ON_NO_MATCH: ${{ inputs.fail_on_no_match }}
+    INPUT_COMMENT_HEADER: ${{ inputs.comment_header }}
+    INPUT_GITHUB_TOKEN: ${{ inputs.github_token }}
+    GITHUB_REPOSITORY: ${{ github.repository }}
+    GITHUB_EVENT_PATH: ${{ github.event_path }}
+
+branding:
+  icon: "search"
+  color: "orange"

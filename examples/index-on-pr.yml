@@ -1,0 +1,18 @@
+# Index the codebase on every PR and report stats as a step summary.
+name: VecGrep Index
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  index:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Index codebase
+        uses: VecGrep/action@main
+        with:
+          mode: index
+          path: .
